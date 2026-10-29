@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# close-process [--force] NAME: quit the processes in one panel row. Only your own processes in uwsm app units
+# (app-*.scope/.service) are touched, the rule process-memory uses for "closable", so services, Hyprland and the
+# shell never are. Steam is the exception: it gets its own clean shutdown, however it was started.
+# Graceful: close their windows first (apps can ask to save), then SIGTERM what is left.
+# Exit 0 when all are gone, 3 when some still run; the panel then offers Force quit (--force: SIGKILL).
+
+set -u
+export LC_ALL=C
+
+force=0
+[[ ${1:-} == --force ]] && { force=1; shift; }
+name=${1:?usage: close-process [--force] NAME}
+
+# Rebuilds each name exactly as process-memory does, so NAME matches its row.
+targets() {
+  ps -eo pid=,uid=,uunit=,comm= | awk -v uid="$(id -u)" -v name="$name" '{
+    pid = $1; own = ($2 == uid); app = ($3 ~ /^app-/)
+    $1 = ""; $2 = ""; $3 = ""; sub(/^[[:space:]]+/, ""); gsub(/\t/, " ")
+    if (own && $0 == name && (app || name ~ /^steam/)) print pid
+  }'
+}
+
+gone_within() {
+  for ((i = 0; i < $1 * 4; i++)); do
+    [[ -z $(targets) ]] && return 0
+    sleep 0.25
+  done
+  return 1
+}
+
+windows() {
+  hyprctl clients -j | jq -r --argjson pids "[$(targets | paste -sd,)]" '.[] | select(.pid | IN($pids[])) | .address'
+}
+
+[[ -n $(targets) ]] || exit 0
+
+if ((force)); then
+  kill -KILL $(targets) 2>/dev/null
+  gone_within 2 || exit 3
+  exit 0
+fi
+
+if [[ $name == steam* ]]; then
+  # Steam's own shutdown saves downloads and cloud state; SIGTERM to its processes does not.
+  steam -shutdown >/dev/null 2>&1
+  gone_within 30 || exit 3
+  exit 0
+fi
+
+wins=$(windows)
+for addr in $wins; do
+  hyprctl dispatch "hl.dsp.window.close({ window = \"address:$addr\" })" >/dev/null
+done
+if [[ -n $wins ]]; then
+  sleep 2
+  # A window still open (e.g. "save changes?") means the user is deciding: no SIGTERM under it.
+  [[ -z $(windows) ]] || exit 3
+fi
+
+kill -TERM $(targets) 2>/dev/null
+gone_within 5 || exit 3

@@ -16,6 +16,8 @@ Panel {
   property bool processHasSnapshot: false
   property string processError: ""
   property var processRows: []
+  property string confirmName: ""
+  property string forceName: ""
 
   readonly property var barIdentity: hostWidget || root
   readonly property var snapshot: hostWidget && hostWidget.memorySnapshot
@@ -27,6 +29,7 @@ Panel {
     return isFinite(value) ? Math.max(1, Math.min(10, Math.round(value))) : 5
   }
   readonly property string processScript: localPath(Qt.resolvedUrl("scripts/process-memory"))
+  readonly property string closeScript: localPath(Qt.resolvedUrl("scripts/close-process"))
 
   readonly property real totalBytes: Number(snapshot.totalBytes || 0)
   readonly property real usedBytes: Number(snapshot.usedBytes || 0)
@@ -76,6 +79,8 @@ Panel {
   }
 
   function close() {
+    confirmName = ""
+    forceName = ""
     root.controller.hide()
   }
 
@@ -87,6 +92,15 @@ Panel {
 
   function refreshProcesses() {
     if (!processMemory.running) processMemory.running = true
+  }
+
+  function closeProcess(name, force) {
+    if (processCloser.running) return
+    confirmName = ""
+    forceName = ""
+    processCloser.target = name
+    processCloser.command = force ? [closeScript, "--force", name] : [closeScript, name]
+    processCloser.running = true
   }
 
   function updateProcesses(raw) {
@@ -505,7 +519,7 @@ Panel {
             Text {
               anchors.left: processIconSlot.right
               anchors.leftMargin: Style.space(7)
-              anchors.right: processPercentLabel.left
+              anchors.right: processCloseButton.left
               anchors.rightMargin: Style.space(10)
               anchors.verticalCenter: parent.verticalCenter
               text: root.processDisplayName(modelData.name)
@@ -514,6 +528,35 @@ Panel {
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.body
               elide: Text.ElideRight
+            }
+
+            Text {
+              id: processCloseButton
+              readonly property bool busy: processCloser.running && processCloser.target === modelData.name
+              readonly property bool armed: root.confirmName === modelData.name || root.forceName === modelData.name
+              anchors.right: processPercentLabel.left
+              anchors.verticalCenter: parent.verticalCenter
+              visible: modelData.closable === true
+              width: visible ? implicitWidth : 0
+              text: busy ? "…"
+                : root.forceName === modelData.name ? "Force quit"
+                : root.confirmName === modelData.name ? "Quit?"
+                : "󰅖"
+              color: armed ? Color.urgent : Qt.darker(root.barForeground, 1.35)
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+              font.bold: armed
+
+              MouseArea {
+                anchors.fill: parent
+                enabled: !parent.busy
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  if (root.forceName === modelData.name) root.closeProcess(modelData.name, true)
+                  else if (root.confirmName === modelData.name) root.closeProcess(modelData.name, false)
+                  else root.confirmName = modelData.name
+                }
+              }
             }
 
             Text {
@@ -634,7 +677,7 @@ Panel {
 
         Text {
           width: parent.width
-          text: "Processes are grouped RSS · R to refresh"
+          text: "Processes are grouped RSS · 󰅖 quits · R to refresh"
           color: Qt.darker(root.barForeground, 1.5)
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.caption
@@ -664,6 +707,16 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.updateProcesses(text)
+    }
+  }
+
+  Process {
+    id: processCloser
+    property string target: ""
+
+    onExited: function(exitCode) {
+      root.forceName = exitCode === 3 ? target : ""
+      root.refreshProcesses()
     }
   }
 
