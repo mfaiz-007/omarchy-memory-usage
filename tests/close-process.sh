@@ -5,7 +5,7 @@
 set -u
 close=$(cd "$(dirname "$0")/.." && pwd)/scripts/close-process
 tmp=$(mktemp -d)
-trap 'systemctl --user stop "rt-svc-$$" 2>/dev/null; pkill -KILL -x rt-standin; rm -rf "$tmp"' EXIT
+trap 'systemctl --user stop "rt-svc-$$" 2>/dev/null; pkill -KILL -x rt-standin; [[ -n ${cid:-} ]] && docker rm -f "$cid" >/dev/null 2>&1; rm -rf "$tmp"' EXIT
 ln -s "$(command -v sleep)" "$tmp/rt-standin"
 fail() { echo "FAIL: $*"; exit 1; }
 count() { pgrep -cx rt-standin; }
@@ -28,5 +28,19 @@ rc=$?
 [[ $rc == 3 ]] || fail "SIGTERM-ignoring stand-in: expected exit 3, got $rc"
 "$close" --force rt-standin || fail "force close exited $?"
 wait_count 1
+
+# A process inside a Docker container: its row stops the whole container.
+# shortcut: borrows the first local image and assumes /bin/sh and /bin/sleep in it; set RT_IMAGE to pick another.
+img=${RT_IMAGE:-$(docker image ls -q 2>/dev/null | head -1)}
+if [[ -n $img ]]; then
+  cid=$(docker run -d --rm --stop-timeout 1 --entrypoint /bin/sh "$img" -c 'cp /bin/sleep /tmp/rt-dock && exec /tmp/rt-dock 600') ||
+    fail "docker run failed"
+  for _ in {1..40}; do pgrep -x rt-dock >/dev/null && break; sleep 0.25; done
+  pgrep -x rt-dock >/dev/null || fail "the container stand-in never started"
+  "$close" rt-dock || fail "docker close exited $?"
+  [[ -z $(docker ps -q --filter "id=$cid") ]] || fail "the container still runs"
+else
+  echo "skip: no local Docker image"
+fi
 
 echo PASS

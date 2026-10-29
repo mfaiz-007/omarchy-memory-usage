@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # close-process [--force] NAME: quit the processes in one panel row. Only your own processes in uwsm app units
 # (app-*.scope/.service) are touched, the rule process-memory uses for "closable", so services, Hyprland and the
-# shell never are. Steam is the exception: it gets its own clean shutdown, however it was started.
+# shell never are. Steam gets its own clean shutdown, however it was started. A row inside a Docker container stops
+# the whole container (docker stop: SIGTERM, then SIGKILL after the container's stop timeout).
 # Graceful: close their windows first (apps can ask to save), then SIGTERM what is left.
 # Exit 0 when all are gone, 3 when some still run; the panel then offers Force quit (--force: SIGKILL).
 
@@ -14,10 +15,10 @@ name=${1:?usage: close-process [--force] NAME}
 
 # Rebuilds each name exactly as process-memory does, so NAME matches its row.
 targets() {
-  ps -eo pid=,uid=,uunit=,comm= | awk -v uid="$(id -u)" -v name="$name" '{
-    pid = $1; own = ($2 == uid); app = ($3 ~ /^app-/)
-    $1 = ""; $2 = ""; $3 = ""; sub(/^[[:space:]]+/, ""); gsub(/\t/, " ")
-    if (own && $0 == name && (app || name ~ /^steam/)) print pid
+  ps -eo pid=,uid=,uunit=,unit=,comm= | awk -v uid="$(id -u)" -v name="$name" '{
+    pid = $1; own = ($2 == uid); app = ($3 ~ /^app-/); docker = ($4 ~ /^docker-[0-9a-f]+\.scope$/)
+    $1 = ""; $2 = ""; $3 = ""; $4 = ""; sub(/^[[:space:]]+/, ""); gsub(/\t/, " ")
+    if ($0 == name && ((own && (app || name ~ /^steam/)) || docker)) print pid
   }'
 }
 
@@ -39,6 +40,14 @@ if ((force)); then
   kill -KILL $(targets) 2>/dev/null
   gone_within 2 || exit 3
   exit 0
+fi
+
+containers=$(for p in $(targets); do
+  sed -n 's#^0::.*/docker-\([0-9a-f]\{64\}\)\.scope$#\1#p' "/proc/$p/cgroup" 2>/dev/null
+done | sort -u)
+if [[ -n $containers ]]; then
+  docker stop $containers >/dev/null 2>&1 || exit 3
+  [[ -n $(targets) ]] || exit 0
 fi
 
 if [[ $name == steam* ]]; then

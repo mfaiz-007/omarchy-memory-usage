@@ -6,17 +6,19 @@ export LC_ALL=C
 total_kib=$(awk '$1 == "MemTotal:" { print $2; exit }' /proc/meminfo)
 [[ $total_kib =~ ^[0-9]+$ ]] || total_kib=0
 
-ps -eo pid=,rss=,uid=,uunit=,comm= 2>/dev/null |
+ps -eo pid=,rss=,uid=,uunit=,unit=,comm= 2>/dev/null |
   awk -v total_kib="$total_kib" -v uid="$(id -u)" '
     {
       pid = $1
       rss = $2
       own = ($3 == uid)
       app = ($4 ~ /^app-/)
+      docker = ($5 ~ /^docker-[0-9a-f]+\.scope$/)
       $1 = ""
       $2 = ""
       $3 = ""
       $4 = ""
+      $5 = ""
       sub(/^[[:space:]]+/, "")
       name = $0
       gsub(/\t/, " ", name)
@@ -28,8 +30,9 @@ ps -eo pid=,rss=,uid=,uunit=,comm= 2>/dev/null |
         representative_pid[name] = pid
         largest_rss[name] = rss
       }
-      # Same rule as scripts/close-process: your own app-unit processes, and Steam however it was started.
-      if (own && (app || name ~ /^steam/)) closable[name] = 1
+      # Same rule as scripts/close-process: your own app-unit processes, Steam however it was started, and
+      # processes inside a Docker container (the whole container stops).
+      if ((own && (app || name ~ /^steam/)) || docker) closable[name] = 1
     }
 
     END {
